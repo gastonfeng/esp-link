@@ -1,13 +1,13 @@
   <div id="main" class="flex-fill flex-vbox" style="max-height:100%">
     <div class="header">
-      <h1>Microcontroller Console</h1>
+      <h1>处理器控制台</h1>
     </div>
 
     <div class="content flex-fill flex-vbox">
       <p>
-        <a id="reset-button" class="pure-button button-primary" href="#">Reset &#xb5;C</a>
-        &nbsp; <a id="clear-button" class="pure-button button-primary" href="#">Clear Log</a>
-        &nbsp; Baud:
+        <a id="reset-button" class="pure-button button-primary" href="#">复位 &#xb5;C</a>
+        &nbsp; <a id="clear-button" class="pure-button button-primary" href="#">清除日志</a>
+        &nbsp; 波特率:
         <select id="baud-sel" class="pure-button" href="#">
           <option value="4500000">4500000</option>
           <option value="2250000">2250000</option>
@@ -32,7 +32,7 @@
           <option value="600">600</option>
           <option value="300">300</option>
         </select>
-        &nbsp; Fmt:
+        &nbsp; 格式:
         <select id="fmt-sel" class="pure-button" href="#">
           <option value="8N1">8N1</option>
           <option value="8E1">8E1</option>
@@ -45,7 +45,7 @@
         </select>
       </p>
       <div class="pure-g">
-        <div class="pure-u-1-4"><legend><b>Console</b></legend></div>
+        <div class="pure-u-1-4"><legend><b>控制台</b></legend></div>
         <div class="pure-u-3-4"></div>
       </div>
       <pre class="console flex-fill" id="console">--- No Content ---</pre>
@@ -53,7 +53,7 @@
         <div class="pure-g">
           <div class="pure-u-1-4"><legend><b>Console entry</b></legend></div>
           <div class="pure-u-2-4">
-            <legend>(ENTER to submit, ESC to clear)</legend>
+            <legend>(ENTER 提交, ESC 清除)</legend>
           </div>
           <div class="pure-u-1-4">
             <legend>Add:
@@ -69,8 +69,8 @@
           </div>
         </div>
         <div class="pure-g">
-          <div class="pure-u-1-4"><legend><b>History buffer</b></legend></div>
-          <div class="pure-u-2-4"><legend>(UP/DOWN arrows to select)</legend></div>
+          <div class="pure-u-1-4"><legend><b>历史缓冲区</b></legend></div>
+          <div class="pure-u-2-4"><legend>(上/下箭头选择)</legend></div>
           <div class="pure-u-1-4"></div>
         </div>
         <div class="pure-g">
