@@ -53,7 +53,8 @@ window.SwaggerTranslator.learn({
     "(UP/DOWN arrows to select)":"(上/下箭头选择)",
     "WiFi Soft-AP Configuration":"WiFi Soft-AP配置",
     "Soft-AP State":"Soft-AP状态",
-    "Change Soft-AP settings!":"更改Soft-AP设置!"
+    "Change Soft-AP settings!":"更改Soft-AP设置!",
+    "Debug Log":"调试日志"
 });
  
  
