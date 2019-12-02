@@ -2,6 +2,7 @@
 //
 // Adapted from: github.com/tuanpmt/esp_bridge, Created on: Mar 4, 2015, Author: Minh
 // Adapted from: rest.c, Author: Thorsten von Eicken
+// Hostname resolver for udp, bugfix and SOCK_SKIP_USERCB_SENT define by leodesigner@github.com
 
 #include "esp8266.h"
 #include "c_types.h"
@@ -9,6 +10,7 @@
 #include "socket.h"
 
 #define SOCK_DBG
+#define SOCK_SKIP_USERCB_SENT
 
 #ifdef SOCK_DBG
 #define DBG_SOCK(format, ...) os_printf(format, ## __VA_ARGS__)
@@ -79,11 +81,8 @@ static void ICACHE_FLASH_ATTR
 socketclient_sent_cb(void *arg) {
 	struct espconn *pCon = (struct espconn *)arg;
 	SocketClient* client = (SocketClient *)pCon->reverse;
-
 	uint8_t clientNum = client->conn_num;
-	uint8_t cb_type = USERCB_SENT;
 	DBG_SOCK("SOCKET #%d: Sent\n", client-socketClient);
-	sint16 sentDataLen = client->data_sent;
 	if (client->data_sent != client->data_len) 
 	{
 		// we only sent part of the buffer, send the rest
@@ -93,25 +92,32 @@ socketclient_sent_cb(void *arg) {
 			data_left = 1400;
 			espconn_sent(client->pCon, (uint8_t*)(client->data+client->data_sent), 1400 );
 		}
-		espconn_sent(client->pCon, (uint8_t*)(client->data+client->data_sent), data_left );
+		sint8_t ret = espconn_send(client->pCon, (uint8_t*)(client->data+client->data_sent), data_left );
+		if (ret != 0) { 
+			DBG_SOCK("SOCKET Send_CB error: %d\n", ret);
+		}
 		client->data_sent += data_left;
 	}
 	else
 	{
 		// we're done sending, free the memory
 		if (client->data) os_free(client->data);
-		client->data = 0;
+		client->data = NULL;
 
 		if (client->sock_mode == SOCKET_TCP_CLIENT) { // We don't wait for a response
 			DBG_SOCK("SOCKET #%d: disconnect after sending\n", clientNum);
 			espconn_disconnect(client->pCon);
 		}
 
+		#ifndef SOCK_SKIP_USERCB_SENT
+		uint8_t cb_type = USERCB_SENT;
+		sint16 sentDataLen = client->data_sent;
 		cmdResponseStart(CMD_RESP_CB, client->resp_cb, 3);
 		cmdResponseBody(&cb_type, 1);	
 		cmdResponseBody(&clientNum, 1);
 		cmdResponseBody(&sentDataLen, 2);
 		cmdResponseEnd();
+		#endif
 	}
 }
 
@@ -127,7 +133,7 @@ socketclient_discon_cb(void *arg) {
 	DBG_SOCK("SOCKET #%d: Disconnect\n", clientNum);
 	// free the data buffer, if we have one
 	if (client->data) os_free(client->data);
-	client->data = 0;
+	client->data = NULL;
 	cmdResponseStart(CMD_RESP_CB, client->resp_cb, 3);
 	cmdResponseBody(&cb_type, 1);	
 	cmdResponseBody(&clientNum, 1);
@@ -152,7 +158,7 @@ socketclient_recon_cb(void *arg, sint8 errType) {
 	cmdResponseEnd();
 	// free the data buffer, if we have one
 	if (client->data) os_free(client->data);
-	client->data = 0;
+	client->data = NULL;
 }
 
 // Connection is done
@@ -213,11 +219,50 @@ socket_dns_found(const char *name, ip_addr_t *ipaddr, void *arg) {
 	}
 }
 
+// please note if your local DNS will be too late with response (>2seconds)
+// MCU need to repeat UDP.begin in case of failure
+static void ICACHE_FLASH_ATTR
+udp_dns_found(const char *name, ip_addr_t *ipaddr, void *arg) {
+	struct espconn *pConn = (struct espconn *)arg;
+	SocketClient* client = (SocketClient *)pConn->reverse;
+	uint8_t clientNum = client->conn_num;
+
+	if (ipaddr == NULL) {
+		sint16 _errType = ESPCONN_RTE; //-4;
+		uint8_t cb_type = USERCB_RECO; // use Routing problem or define a new one
+		os_printf("SOCKET #%d DNS: Got no ip, report error\n", clientNum);
+		cmdResponseStart(CMD_RESP_CB, client->resp_cb, 3);    
+		cmdResponseBody(&cb_type, 2); // Same as connection reset?? or define a new one
+		cmdResponseBody(&clientNum, 1);    
+		cmdResponseBody(&_errType, 2);    
+		cmdResponseEnd();
+		// cleanup
+		if (client->pCon->proto.udp != NULL) 	{ os_free(client->pCon->proto.udp); }
+		if (client->host != NULL)	{ 	os_free(client->host);  }
+		if (client->pCon != NULL) 	{ 	os_free(client->pCon); 	}
+		return;
+	}
+	DBG_SOCK("SOCKET #%d DNS: found ip %d.%d.%d.%d\n",
+			clientNum,
+			*((uint8 *) &ipaddr->addr),
+			*((uint8 *) &ipaddr->addr + 1),
+			*((uint8 *) &ipaddr->addr + 2),
+			*((uint8 *) &ipaddr->addr + 3));
+	if (client->ip.addr == 0 && ipaddr->addr != 0) {
+		os_memcpy(client->pCon->proto.udp->remote_ip, &ipaddr->addr, 4);
+		espconn_create(client->pCon);
+		client->sock_mode = SOCKET_UDP; // allow normal packet processing for udp
+		DBG_SOCK("SOCKET #%d: UDP setup done\n", clientNum);
+	}
+}
+
 void ICACHE_FLASH_ATTR
 SOCKET_Setup(CmdPacket *cmd) {
 	CmdRequest req;
 	uint16_t port;
 	uint8_t sock_mode;
+	uint8_t *socket_host = NULL;
+	SocketClient *client = NULL;
 	int32_t err = -1; // error code in case of failure
 
 	// start parsing the command
@@ -235,7 +280,7 @@ SOCKET_Setup(CmdPacket *cmd) {
 		goto fail; // safety check
 	}
 	err--;
-	uint8_t *socket_host = (uint8_t*)os_zalloc(len + 1);
+	socket_host = (uint8_t*)os_zalloc(len + 1);
 	if (socket_host == NULL) {
 		DBG_SOCK("SOCKET Setup failed to alloc memory for socket_host\n");
 		goto fail;
@@ -250,7 +295,6 @@ SOCKET_Setup(CmdPacket *cmd) {
 	// get the port
 	if (cmdPopArg(&req, (uint8_t*)&port, 2)) {
 		DBG_SOCK("SOCKET Setup parse command failure: cannot get port\n");
-		os_free(socket_host);
 		goto fail;
 	}
 	err--;
@@ -258,7 +302,6 @@ SOCKET_Setup(CmdPacket *cmd) {
 	// get the socket mode
 	if (cmdPopArg(&req, (uint8_t*)&sock_mode, 1)) {
 		DBG_SOCK("SOCKET Setup parse command failure: cannot get mode\n");
-		os_free(socket_host);
 		goto fail;
 	}
 	err--;
@@ -270,13 +313,32 @@ SOCKET_Setup(CmdPacket *cmd) {
 		socketNum = 0;
 	}
 
+	// check is this new connection already opened ?
+	if (socketNum > 0) {
+		uint8_t sptr = 0;
+		while (sptr < socketNum) {
+			SocketClient *_client = socketClient + sptr;
+			if (   _client->sock_mode == sock_mode 
+				&& _client->port == port
+				&& strcmp((char *)_client->host, (char *)socket_host) == 0 ) {
+					os_free(socket_host);
+					cmdResponseStart(CMD_RESP_V, sptr, 0);
+					cmdResponseEnd();
+					DBG_SOCK("SOCKET #%d: already connected\n", sptr);
+					return;
+			}
+			sptr++;
+		}
+	}
+
 	// allocate a connection structure
-	SocketClient *client = socketClient + socketNum;
+	client = socketClient + (socketNum % MAX_SOCKET);
 	uint8_t clientNum = socketNum;
-	socketNum = (socketNum+1)%MAX_SOCKET;
+	socketNum = (socketNum + 1) % MAX_SOCKET;
 
 	// free any data structure that may be left from a previous connection
 	if (client->data) os_free(client->data);
+	client->data = NULL;
 	if (client->pCon) {
 		if (sock_mode != SOCKET_UDP) {
 			if (client->pCon->proto.tcp) os_free(client->pCon->proto.tcp);
@@ -322,7 +384,6 @@ SOCKET_Setup(CmdPacket *cmd) {
 	}
 	client->pCon->state = ESPCONN_NONE;
 
-	os_memcpy(client->host, socket_host, 4);
 	if (sock_mode != SOCKET_UDP) {
 		client->pCon->proto.tcp->remote_port = client->port;
 		client->pCon->proto.tcp->local_port = client->port; // espconn_port();	
@@ -341,8 +402,9 @@ SOCKET_Setup(CmdPacket *cmd) {
 		if(UTILS_StrToIP((char *)client->host, &client->pCon->proto.udp->remote_ip)) {
 			espconn_create(client->pCon);
 		} else {
-			DBG_SOCK("SOCKET #%d: failed to copy remote_ip to &client->pCon->proto.udp->remote_ip\n", clientNum);
-			goto fail;
+			DBG_SOCK("SOCKET #%d: UDP Connecting to host %s:%d\n", clientNum, client->host, client->port);
+			espconn_gethostbyname(client->pCon, (char *)client->host, &client->ip, udp_dns_found);
+			sock_mode = SOCKET_UDP_WAIT_RESOLVER;
 		}
 	} else {
 		espconn_regist_reconcb(client->pCon, socketclient_recon_cb);
@@ -359,6 +421,8 @@ SOCKET_Setup(CmdPacket *cmd) {
 	return;
 
 fail:
+	if (socket_host != NULL) 	{  	os_free(socket_host); 	}
+	if (client->pCon != NULL) 	{ 	os_free(client->pCon); 	}
 	cmdResponseStart(CMD_RESP_V, err, 0);
 	cmdResponseEnd();
 	return;
@@ -373,6 +437,11 @@ SOCKET_Send(CmdPacket *cmd) {
 	uint32_t clientNum = cmd->value;
 	SocketClient *client = socketClient + (clientNum % MAX_SOCKET);
 	DBG_SOCK("SOCKET #%d: send", clientNum);
+
+	if (client->sock_mode == SOCKET_UDP_WAIT_RESOLVER) {
+		DBG_SOCK("\nSOCKET #%d: UDP socket is waiting to resolve hostname\n", clientNum);
+		return;
+	}
 
 	if (cmd->argc != 1 && cmd->argc != 2) {
 		DBG_SOCK("\nSOCKET #%d: send - wrong number of arguments\n", clientNum);
@@ -390,7 +459,7 @@ SOCKET_Send(CmdPacket *cmd) {
 		goto fail;
 	}
 	cmdPopArg(&req, client->data, client->data_len);
-	DBG_SOCK(" socketData=%s", client->data);
+	// DBG_SOCK(" socketData=%s", client->data);
 
 	// client->data_len = os_sprintf((char*)client->data, socketDataSet, socketData);
 	
@@ -433,8 +502,13 @@ SOCKET_Send(CmdPacket *cmd) {
 		} 
 	} else { // in UDP socket mode we send the data immediately
 		client->data_sent = client->data_len <= 1400 ? client->data_len : 1400;
-		DBG_SOCK("SOCKET #%d: sending %d bytes: %s\n", clientNum, client->data_sent, client->data);
-		espconn_sent(client->pCon, (uint8_t*)client->data, client->data_sent);
+		DBG_SOCK("SOCKET #%d: sending %d bytes\n", clientNum, client->data_sent);
+		sint8_t ret = espconn_send(client->pCon, (uint8_t*)client->data, client->data_sent);
+		if (ret != 0) { 
+			DBG_SOCK("SOCKET Send error: %d\n", ret);
+		}
+		// what if send callback will never occur after ?
+		// we got error -12 (ESPCONN_ARG) in case if we already have the same udp connection in pool
 	}
 
 	return;

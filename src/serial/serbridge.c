@@ -18,16 +18,17 @@
 static struct espconn serbridgeConn1; // plain bridging port
 static struct espconn serbridgeConn2; // programming port
 static esp_tcp serbridgeTcp1, serbridgeTcp2;
-static int8_t mcu_reset_pin, mcu_isp_pin;
+static int8_t mcu_reset_pin, mcu_isp_pin; 
+static bool mcu_isp_val;
 
-uint8_t in_mcu_flashing;   // for disabling slip during MCU flashing
+uint8_t in_mcu_flashing = 0;   // for disabling slip during MCU flashing
 
 void (*programmingCB)(char *buffer, short length) = NULL;
 
 static sint8 espbuffsend(serbridgeConnData *conn, const char *data, uint16 len);
 
 // Connection pool
-serbridgeConnData connData[MAX_CONN];
+serbridgeConnData connData[SER_BRIDGE_MAX_CONN];
 
 //===== TCP -> UART
 
@@ -150,9 +151,9 @@ telnetUnwrap(serbridgeConnData *conn, uint8_t *inBuf, int len)
       case RTS_ON:
         if (mcu_isp_pin >= 0) {
 #ifdef SERBR_DBG
-          os_printf("Telnet: ISP gpio%d LOW\n", mcu_isp_pin);
+          os_printf("Telnet: ISP gpio%d is set to %d\n", mcu_isp_pin, !mcu_isp_val);
 #endif
-          GPIO_OUTPUT_SET(mcu_isp_pin, 0);
+          GPIO_OUTPUT_SET(mcu_isp_pin, !mcu_isp_val);
           os_delay_us(100L);
         }
 #ifdef SERBR_DBG
@@ -163,9 +164,9 @@ telnetUnwrap(serbridgeConnData *conn, uint8_t *inBuf, int len)
       case RTS_OFF:
         if (mcu_isp_pin >= 0) {
 #ifdef SERBR_DBG
-          os_printf("Telnet: ISP gpio%d HIGH\n", mcu_isp_pin);
+          os_printf("Telnet: ISP gpio%d is set to %d\n", mcu_isp_pin, mcu_isp_val);
 #endif
-          GPIO_OUTPUT_SET(mcu_isp_pin, 1);
+          GPIO_OUTPUT_SET(mcu_isp_pin, mcu_isp_val);
           os_delay_us(100L);
         }
         if (in_mcu_flashing > 0) in_mcu_flashing--;
@@ -261,6 +262,11 @@ telnetUnwrap(serbridgeConnData *conn, uint8_t *inBuf, int len)
 void ICACHE_FLASH_ATTR
 serbridgeReset()
 {
+  in_mcu_flashing = 0; // return to normal non mcu flashing mode
+  uart0_baud(flashConfig.baud_rate);
+  if (mcu_isp_pin >= 0) { // put ISP pin to the default value
+    GPIO_OUTPUT_SET(mcu_isp_pin, mcu_isp_val);
+  }
   if (mcu_reset_pin >= 0) {
 #ifdef SERBR_DBG
     os_printf("MCU reset gpio%d\n", mcu_reset_pin);
@@ -294,7 +300,8 @@ serbridgeRecvCb(void *arg, char *data, unsigned short len)
   if (conn->conn_mode == cmInit) {
 
     // If the connection starts with the Arduino or ARM reset sequence we perform a RESET
-    if ((len == 2 && strncmp(data, "0 ", 2) == 0) ||
+    if ((len == 1 && *data == 0x7F) ||                  // for STM32
+        (len == 2 && strncmp(data, "0 ", 2) == 0) ||
         (len == 2 && strncmp(data, "?\n", 2) == 0) ||
         (len == 3 && strncmp(data, "?\r\n", 3) == 0)) {
       startPGM = true;
@@ -328,18 +335,31 @@ serbridgeRecvCb(void *arg, char *data, unsigned short len)
     os_delay_us(2*1000L); // time for os_printf to happen
 #endif
     // send reset to arduino/ARM, send "ISP" signal for the duration of the programming
+    // for STM32 set ISP pin to 1 before reset
+    if (mcu_isp_pin >= 0 && mcu_isp_val == 0) { 
+      GPIO_OUTPUT_SET(mcu_isp_pin, !mcu_isp_val);
+      os_delay_us(1000L);
+    }
     if (mcu_reset_pin >= 0) GPIO_OUTPUT_SET(mcu_reset_pin, 0);
     os_delay_us(100L);
-    if (mcu_isp_pin >= 0) GPIO_OUTPUT_SET(mcu_isp_pin, 0);
+    if (mcu_isp_pin >= 0) GPIO_OUTPUT_SET(mcu_isp_pin, !mcu_isp_val);
     os_delay_us(2000L);
     if (mcu_reset_pin >= 0) GPIO_OUTPUT_SET(mcu_reset_pin, 1);
     //os_delay_us(100L);
-    //if (mcu_isp_pin >= 0) GPIO_OUTPUT_SET(mcu_isp_pin, 1);
+    //if (mcu_isp_pin >= 0) GPIO_OUTPUT_SET(mcu_isp_pin, !mcu_isp_val);
     os_delay_us(1000L); // wait a millisecond before writing to the UART below
     conn->conn_mode = cmPGM;
     in_mcu_flashing++; // disable SLIP so it doesn't interfere with flashing
     serledFlash(50); // short blink on serial LED
-    return;
+    #ifdef SKIP_AT_RESET
+    return; // this is dropping start sequence characters -- forces to run stm32flash twice
+    #endif
+    if (len == 1 && *data == 0x7F) { // stm32 serial upload must be at reasonable speed
+      if (flashConfig.baud_rate > 460800) {
+        uart0_baud(460800);
+        os_delay_us(100L);
+      }
+    }
   }
 
 
@@ -365,16 +385,11 @@ sendtxbuffer(serbridgeConnData *conn)
   if (conn->txbufferlen != 0) {
     //os_printf("TX %p %d\n", conn, conn->txbufferlen);
     conn->readytosend = false;
-    result = espconn_sent(conn->conn, (uint8_t*)conn->txbuffer, conn->txbufferlen);
+    result = espconn_send(conn->conn, (uint8_t*)conn->txbuffer, conn->txbufferlen);
     conn->txbufferlen = 0;
     if (result != ESPCONN_OK) {
-      os_printf("sendtxbuffer: espconn_sent error %d on conn %p\n", result, conn);
-      conn->txbufferlen = 0;
+      os_printf("sendtxbuffer: espconn_send error %d on conn %p\n", result, conn);
       if (!conn->txoverflow_at) conn->txoverflow_at = system_get_time();
-    } else {
-      conn->sentbuffer = conn->txbuffer;
-      conn->txbuffer = NULL;
-      conn->txbufferlen = 0;
     }
   }
   return result;
@@ -385,52 +400,48 @@ sendtxbuffer(serbridgeConnData *conn)
 // Returns ESPCONN_OK (0) for success, -128 if buffer is full or error from  espconn_sent
 // Use espbuffsend instead of espconn_sent as it solves the problem that espconn_sent must
 // only be called *after* receiving an espconn_sent_callback for the previous packet.
+// single main ring buffer by leodesigner@github
+// the serial data is keept in the console ring buffer and shared amoung all connected clients
 static sint8 ICACHE_FLASH_ATTR
 espbuffsend(serbridgeConnData *conn, const char *data, uint16 len)
 {
-  if (conn->txbufferlen >= MAX_TXBUFFER) goto overflow;
-
-  // make sure we indeed have a buffer
-  if (conn->txbuffer == NULL) conn->txbuffer = os_zalloc(MAX_TXBUFFER);
+  sint8 result = ESPCONN_OK;
+  // the new data is in the console ring buffer now
+  int wr = consoleGetWr(); // console ring buffer writer offset
+  char* buffer = consoleGetBufPtr(); // pointer to the main ring buffer from the console
+  if (!conn->readytosend || wr == conn->rd) return result; // nothing todo if we are busy sending
+  if (wr > conn->rd) {
+    // we have a continious data in the ring buffer
+    conn->txbuffer = buffer + conn->rd;
+    conn->txbufferlen = wr - conn->rd;
+    conn->rd = wr;
+    result = sendtxbuffer(conn);
+    return result;
+  }
+  #ifdef SERBR_ENABLE_MALLOC
+  // data is wrapped in the ring buffer
+  // start the malloc dance to get continious buffer
+  int data_len = CONSOLE_BUF_MAX - conn->rd + wr;
+  conn->sentbuffer = conn->txbuffer = os_zalloc(data_len);
   if (conn->txbuffer == NULL) {
     os_printf("espbuffsend: cannot alloc tx buffer\n");
+    os_printf("espbuffsend: free_heap_size: %d, data_len = %d\n",system_get_free_heap_size(),data_len);
     return -128;
   }
-
-  // add to send buffer
-  uint16_t avail = conn->txbufferlen+len > MAX_TXBUFFER ? MAX_TXBUFFER-conn->txbufferlen : len;
-  os_memcpy(conn->txbuffer + conn->txbufferlen, data, avail);
-  conn->txbufferlen += avail;
-
-  // try to send
-  sint8 result = ESPCONN_OK;
-  if (conn->readytosend) result = sendtxbuffer(conn);
-
-  if (avail < len) {
-    // some data didn't fit into the buffer
-    if (conn->txbufferlen == 0) {
-      // we sent the prior buffer, so try again
-      return espbuffsend(conn, data+avail, len-avail);
-    }
-    goto overflow;
-  }
+  os_memcpy(conn->txbuffer, buffer + conn->rd, CONSOLE_BUF_MAX - conn->rd);
+  if (wr !=0) { os_memcpy(conn->txbuffer + CONSOLE_BUF_MAX - conn->rd, buffer, wr); }
+  conn->txbufferlen = data_len;
+  conn->rd = wr;
+  result = sendtxbuffer(conn);
+  //os_free(conn->txbuffer); // we can do this also after the sent_cb - in case if the buffer cannot be reused
+  #else
+  // in this case the data will be splitted to the two parts and sent with two calls
+  conn->txbuffer = buffer + conn->rd;
+  conn->txbufferlen = CONSOLE_BUF_MAX - conn->rd;
+  conn->rd = 0;
+  result = sendtxbuffer(conn);
+  #endif
   return result;
-
-overflow:
-  if (conn->txoverflow_at) {
-    // we've already been overflowing
-    if (system_get_time() - conn->txoverflow_at > 10*1000*1000) {
-      // no progress in 10 seconds, kill the connection
-      os_printf("serbridge: killing overlowing stuck conn %p\n", conn);
-      espconn_disconnect(conn->conn);
-    }
-    // else be silent, we already printed an error
-  } else {
-    // print 1-time message and take timestamp
-    os_printf("serbridge: txbuffer full, conn %p\n", conn);
-    conn->txoverflow_at = system_get_time();
-  }
-  return -128;
 }
 
 //callback after the data are sent
@@ -441,11 +452,12 @@ serbridgeSentCb(void *arg)
   //os_printf("Sent CB %p\n", conn);
   if (conn == NULL) return;
   //os_printf("%d ST\n", system_get_time());
-  if (conn->sentbuffer != NULL) os_free(conn->sentbuffer);
+  if (conn->sentbuffer != NULL) { os_free(conn->sentbuffer); }
   conn->sentbuffer = NULL;
   conn->readytosend = true;
   conn->txoverflow_at = 0;
-  sendtxbuffer(conn); // send possible new data in txbuffer
+  // send possible new data in txbuffer
+  espbuffsend(conn, NULL, 0); 
 }
 
 void ICACHE_FLASH_ATTR
@@ -455,7 +467,7 @@ console_process(char *buf, short len)
   for (short i=0; i<len; i++)
     console_write_char(buf[i]);
   // push the buffer into each open connection
-  for (short i=0; i<MAX_CONN; i++) {
+  for (short i=0; i<SER_BRIDGE_MAX_CONN; i++) {
     if (connData[i].conn) {
       espbuffsend(&connData[i], buf, len);
     }
@@ -489,16 +501,22 @@ serbridgeDisconCb(void *arg)
   // Free buffers
   if (conn->sentbuffer != NULL) os_free(conn->sentbuffer);
   conn->sentbuffer = NULL;
-  if (conn->txbuffer != NULL) os_free(conn->txbuffer);
   conn->txbuffer = NULL;
   conn->txbufferlen = 0;
   // Send reset to attached uC if it was in programming mode
   if (conn->conn_mode == cmPGM && mcu_reset_pin >= 0) {
-    if (mcu_isp_pin >= 0) GPIO_OUTPUT_SET(mcu_isp_pin, 1);
-    os_delay_us(100L);
-    GPIO_OUTPUT_SET(mcu_reset_pin, 0);
-    os_delay_us(100L);
-    GPIO_OUTPUT_SET(mcu_reset_pin, 1);
+    if (mcu_isp_pin >= 0) GPIO_OUTPUT_SET(mcu_isp_pin, mcu_isp_val);
+    if (mcu_isp_val == 0) {
+      // Reset is not needed in case of STM32
+      // restore original baud rate for STM32 console
+      uart0_baud(flashConfig.baud_rate);
+      os_delay_us(100L);
+    } else {
+      os_delay_us(100L);
+      GPIO_OUTPUT_SET(mcu_reset_pin, 0);
+      os_delay_us(1000L);
+      GPIO_OUTPUT_SET(mcu_reset_pin, 1);
+    }
   }
   conn->conn = NULL;
 }
@@ -518,13 +536,13 @@ serbridgeConnectCb(void *arg)
   struct espconn *conn = arg;
   // Find empty conndata in pool
   int i;
-  for (i=0; i<MAX_CONN; i++) if (connData[i].conn==NULL) break;
+  for (i=0; i<SER_BRIDGE_MAX_CONN; i++) if (connData[i].conn==NULL) break;
 #ifdef SERBR_DBG
   os_printf("Accept port %d, conn=%p, pool slot %d\n", conn->proto.tcp->local_port, conn, i);
 #endif
   syslog(SYSLOG_FAC_USER, SYSLOG_PRIO_NOTICE, "esp-link", "Accept port %d, conn=%p, pool slot %d\n",
       conn->proto.tcp->local_port, conn, i);
-  if (i==MAX_CONN) {
+  if (i==SER_BRIDGE_MAX_CONN) {
 #ifdef SERBR_DBG
     os_printf("Aiee, conn pool overflow!\n");
 #endif
@@ -538,6 +556,7 @@ serbridgeConnectCb(void *arg)
   conn->reverse = connData+i;
   connData[i].readytosend = true;
   connData[i].conn_mode = cmInit;
+  connData[i].rd = consoleGetWr(); // init ring buffer reader offset
   // if it's the second port we start out in programming mode
   if (conn->proto.tcp->local_port == serbridgeConn2.proto.tcp->local_port)
     connData[i].conn_mode = cmPGMInit;
@@ -557,6 +576,7 @@ serbridgeInitPins()
 {
   mcu_reset_pin = flashConfig.reset_pin;
   mcu_isp_pin = flashConfig.isp_pin;
+  mcu_isp_val = flashConfig.invisp ? 0 : 1; // 1 - AVR ISP pin, 0 - STM32 inverted ISP pin
 #ifdef SERBR_DBG
   os_printf("Serbridge pins: reset=%d isp=%d swap=%d\n",
       mcu_reset_pin, mcu_isp_pin, flashConfig.swap_uart);
@@ -578,18 +598,23 @@ serbridgeInitPins()
     system_uart_de_swap();
   }
 
-  // set both pins to 1 before turning them on so we don't cause a reset
-  if (mcu_isp_pin >= 0)   GPIO_OUTPUT_SET(mcu_isp_pin, 1);
+  // set both pins to default values before turning them on so we don't cause a reset
+  if (mcu_isp_pin >= 0)   GPIO_OUTPUT_SET(mcu_isp_pin, mcu_isp_val);
   if (mcu_reset_pin >= 0) GPIO_OUTPUT_SET(mcu_reset_pin, 1);
   // switch pin mux to make these pins GPIO pins
   if (mcu_reset_pin >= 0) makeGpio(mcu_reset_pin);
   if (mcu_isp_pin >= 0)   makeGpio(mcu_isp_pin);
+  // Reset Slave MCU in case of STM32 (for el-client sync)
+  if (mcu_isp_val == 0) {
+    serbridgeReset();
+  }
 }
 
 // Start transparent serial bridge TCP server on specified port (typ. 23)
 void ICACHE_FLASH_ATTR
 serbridgeInit(int port1, int port2)
 {
+  in_mcu_flashing = 0;
   serbridgeInitPins();
 
   os_memset(connData, 0, sizeof(connData));
@@ -604,7 +629,7 @@ serbridgeInit(int port1, int port2)
 
   espconn_regist_connectcb(&serbridgeConn1, serbridgeConnectCb);
   espconn_accept(&serbridgeConn1);
-  espconn_tcp_set_max_con_allow(&serbridgeConn1, MAX_CONN);
+  espconn_tcp_set_max_con_allow(&serbridgeConn1, SER_BRIDGE_MAX_CONN);
   espconn_regist_time(&serbridgeConn1, SER_BRIDGE_TIMEOUT, 0);
 
   // set-up the secondary port for programming
@@ -615,7 +640,7 @@ serbridgeInit(int port1, int port2)
 
   espconn_regist_connectcb(&serbridgeConn2, serbridgeConnectCb);
   espconn_accept(&serbridgeConn2);
-  espconn_tcp_set_max_con_allow(&serbridgeConn2, MAX_CONN);
+  espconn_tcp_set_max_con_allow(&serbridgeConn2, SER_BRIDGE_MAX_CONN);
   espconn_regist_time(&serbridgeConn2, SER_BRIDGE_TIMEOUT, 0);
 }
 

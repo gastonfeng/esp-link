@@ -155,11 +155,11 @@ function ajaxReq(method, url, ok_cb, err_cb, data) {
   var xhr = j();
   xhr.open(method, url, true);
   var timeout = setTimeout(function() {
-    xhr.abort();
-    console.log("XHR abort:", method, url);
     xhr.status = 599;
     xhr.responseText = "request time-out";
-  }, 9000);
+    xhr.abort();
+    console.log("XHR abort:", method, url);
+  }, 30000);
   xhr.onreadystatechange = function() {
     if (xhr.readyState != 4) { return; }
     clearTimeout(timeout);
@@ -393,12 +393,12 @@ function showNotification(text) {
 //===== GPIO Pin mux card
 
 var pinPresets = {
-  // array: reset, isp, conn, ser, swap, rxpup
-  "esp-01":       [  0, -1, 2, -1, 0, 1 ],
-  "esp-12":       [ 12, 14, 0,  2, 0, 1 ],
-  "esp-12 swap":  [  1,  3, 0,  2, 1, 1 ],
-  "esp-bridge":   [ 12, 13, 0, 14, 0, 0 ],
-  "wifi-link-12": [  1,  3, 0,  2, 1, 0 ],
+  // array: reset, isp, conn, ser, swap, rxpup, invisp, cpufreq
+  "esp-01":       [  0, -1, 2, -1, 0, 1, 0, 80],
+  "esp-12":       [ 12, 14, 0,  2, 0, 1, 0, 80],
+  "esp-12 swap":  [  1,  3, 0,  2, 1, 1, 0, 80],
+  "esp-bridge":   [ 12, 13, 0, 14, 0, 0, 0, 80],
+  "wifi-link-12": [  1,  3, 0,  2, 1, 0, 0, 80],
 };
 
 function createPresets(sel) {
@@ -418,6 +418,8 @@ function createPresets(sel) {
     setPP("ser",   pp[3]);
     setPP("swap",  pp[4]);
     $("#pin-rxpup").checked = !!pp[5];
+    $("#pin-invisp").checked = !!pp[6];
+    $("#cpufreq").value = pp[7];
     sel.value = 0;
   };
 
@@ -453,6 +455,8 @@ function displayPins(resp) {
   createSelectForPin("ser", resp["ser"]);
   $("#pin-swap").value = resp["swap"];
   $("#pin-rxpup").checked = !!resp["rxpup"];
+  $("#pin-invisp").checked = !!resp["invisp"];
+  $("#cpufreq").value = resp["cpufreq"];
   createPresets($("#pin-preset"));
 
   $("#pin-spinner").setAttribute("hidden", "");
@@ -474,6 +478,8 @@ function setPins(ev) {
     sep = "&";
   });
   url += "&rxpup=" + ($("#pin-rxpup").checked ? "1" : "0");
+  url += "&invisp=" + ($("#pin-invisp").checked ? "1" : "0");
+  url += "&cpufreq=" + ($("#cpufreq").value);
 //  console.log("set pins: " + url);
   ajaxSpin("POST", url, function() {
     showNotification("Pin assignment changed");

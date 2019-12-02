@@ -32,6 +32,7 @@
 #include "log.h"
 #include "gpio.h"
 #include "cgiservices.h"
+#include "serial/mcuwd.h"
 
 #ifdef WEBSERVER
 #include "web-server/web-server.h"
@@ -67,7 +68,7 @@ handled top-down, so make sure to put more specific rules above the more
 general ones. Authorization things (like authBasic) act as a 'barrier' and
 should be placed above the URLs they protect.
 */
-HttpdBuiltInUrl builtInUrls[] = {
+const HttpdBuiltInUrl builtInUrls[] = {
   { "/", cgiRedirect, "/home.html" },
   { "/menu", cgiMenu, NULL },
   { "/flash/next", cgiGetFirmwareNext, NULL },
@@ -88,6 +89,7 @@ HttpdBuiltInUrl builtInUrls[] = {
   { "/log/reset", cgiReset, NULL },
   { "/console/reset", ajaxConsoleReset, NULL },
   { "/console/baud", ajaxConsoleBaud, NULL },
+  { "/console/clear", ajaxConsoleClear, NULL },
   { "/console/fmt", ajaxConsoleFormat, NULL },
   { "/console/text", ajaxConsole, NULL },
   { "/console/send", ajaxConsoleSend, NULL },
@@ -131,9 +133,7 @@ static void ICACHE_FLASH_ATTR prHeapTimerCb(void *arg) {
 char* esp_link_version = VERS_STR(VERSION);
 
 // address of espfs binary blob
-#if PIO_HACK
-extern uint32_t _binary_espfs_img_start;
-#endif
+uint32_t _binary_espfs_img_start=0;
 
 extern void app_init(void);
 extern void mqtt_client_init(void);
@@ -181,15 +181,20 @@ user_init(void) {
   os_delay_us(10000L);
   os_printf("\n\n** %s\n", esp_link_version);
   os_printf("Flash config restore %s\n", restoreOk ? "ok" : "*FAILED*");
+  while(1){};
+  // Cpu frequency
+  if (flashConfig.cpu_freq == 160) {
+    if (system_update_cpu_freq(flashConfig.cpu_freq)) {
+      os_printf("System CPU freq is set to 160 Mhz\n");
+    }
+  }
   // Status LEDs
   statusInit();
   serledInit();
   // Wifi
   wifiInit();
-#if PIO_HACK
   // init the flash filesystem with the html stuff
   espFsInit(espLinkCtx, &_binary_espfs_img_start, ESPFS_MEMORY);
-#endif
 
   //EspFsInitResult res = espFsInit(&_binary_espfs_img_start);
   //os_printf("espFsInit %s\n", res?"ERR":"ok");
@@ -226,10 +231,16 @@ user_init(void) {
     mqtt_client_init();
   }
 #endif
+  mcuwd_init();
   NOTICE("initializing user application");
   app_init();
   NOTICE("Waiting for work to do...");
 #ifdef MEMLEAK_DEBUG
   system_show_malloc();
 #endif
+}
+void setup(){
+  while(1){
+  printf("Hello World!");
+  }
 }

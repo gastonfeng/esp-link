@@ -23,7 +23,7 @@ FlashConfig flashDefault = {
   .slip_enable  = 0, .mqtt_enable = 0, .mqtt_status_enable = 0,
   .mqtt_timeout = 2, .mqtt_clean_session = 1,
   .mqtt_port    = 1883, .mqtt_keepalive = 60,
-  .mqtt_old_host  = "\0", .mqtt_clientid = "\0",
+  .mqtt_old_host  = "\0", .mqtt_old_password = "\0", .mqtt_old_username = "\0", .mqtt_clientid = "\0",
   .mqtt_username  = "\0", .mqtt_password = "\0", .mqtt_status_topic = "\0",
   .mqtt_host      = "\0",
   .sys_descr 	  = "\0",
@@ -34,6 +34,9 @@ FlashConfig flashDefault = {
   .data_bits	= EIGHT_BITS,
   .parity	= NONE_BITS,
   .stop_bits	= ONE_STOP_BIT,
+  .invisp       = 0,
+  .cpu_freq     = 80,
+  .mcu_wd_timeout = 0
 };
 
 typedef union {
@@ -154,11 +157,29 @@ bool ICACHE_FLASH_ATTR configRestore(void) {
       os_memset(flashConfig.mqtt_old_host, 0, 32);
   } else os_printf("mqtt_host is '%s'\n", flashConfig.mqtt_host);
 
+  if (flashConfig.mqtt_password[0] == 0 && flashConfig.mqtt_old_password[0] != 0) {
+      // the mqtt_password got changed from 32 chars to 64 in a new location
+      os_printf("Converting old mqtt_password\n");
+      os_memcpy(flashConfig.mqtt_password, flashConfig.mqtt_old_password, 32);
+      os_memset(flashConfig.mqtt_old_password, 0, 32);
+  }
+
+  if (flashConfig.mqtt_username[0] == 0 && flashConfig.mqtt_old_username[0] != 0) {
+      // the mqtt_username got changed from 32 chars to 64 in a new location
+      os_printf("Converting old mqtt_username\n");
+      os_memcpy(flashConfig.mqtt_password, flashConfig.mqtt_old_username, 32);
+      os_memset(flashConfig.mqtt_old_username, 0, 32);
+  }
+
   if (flashConfig.data_bits == 0) {
       // restore to default 8N1
       flashConfig.data_bits = flashDefault.data_bits;
       flashConfig.parity = flashDefault.parity;
       flashConfig.stop_bits = flashDefault.stop_bits;
+  }
+  // default cpu frequency
+  if (flashConfig.cpu_freq == 0) {
+      flashConfig.cpu_freq = 80;
   }
   return true;
 }

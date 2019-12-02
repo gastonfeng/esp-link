@@ -1,5 +1,4 @@
 build/
-firmware/
 espfs/mkespfsimage/*.o
 espfs/mkespfsimage/mkespfsimage
 webpages.espfs
@@ -17,3 +16,4 @@ espfs/mkespfsimage/mman-win32/libmman.a
 .localhistory/
 local.conf
 *.tgz
+.vscode/
