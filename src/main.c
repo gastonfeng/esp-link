@@ -181,7 +181,6 @@ user_init(void) {
   os_delay_us(10000L);
   os_printf("\n\n** %s\n", esp_link_version);
   os_printf("Flash config restore %s\n", restoreOk ? "ok" : "*FAILED*");
-  while(1){};
   // Cpu frequency
   if (flashConfig.cpu_freq == 160) {
     if (system_update_cpu_freq(flashConfig.cpu_freq)) {
