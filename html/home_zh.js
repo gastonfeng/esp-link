@@ -1,5 +1,5 @@
 'use strict';
- 
+
 /**
  * Html页面多语言化。
  *
@@ -17,7 +17,7 @@
  */
 window.SwaggerTranslator = {
     _words: [],
- 
+
     translate: function () {
         var $this = this;
         $('[data-sw-translate]').each(function () {
@@ -26,17 +26,17 @@ window.SwaggerTranslator = {
             $(this).attr('title', $this._tryTranslate($(this).attr('title')));
         });
     },
- 
+
     _tryTranslate: function (word) {
         return this._words[$.trim(word)] !== undefined ? this._words[$.trim(word)] : word;
     },
- 
+
     learn: function (wordsMap) {
         this._words = wordsMap;
     }
 };
- 
- 
+
+
 /* jshint quotmark: double */
 window.SwaggerTranslator.learn({
     "System overview": "概览",
@@ -45,19 +45,22 @@ window.SwaggerTranslator.learn({
     "WiFi channel": "Wifi通道",
     "Flash chip ID": "Flash芯片ID",
     "Flash size": "Flash大小",
-    "Microcontroller Console":"处理器控制台",
-    "Reset &#xb5;C":"复位&#xb5;C",
-    "Clear Log":"清除日志",
-    "&nbsp; Baud:":"&nbsp;波特率:", method, url, "->","&nbsp; Fmt:":"&nbsp;格式:", method, url, "->","Console":"控制台","(ENTER to submit, ESC to clear)":"(ENTER提交, ESC清除)",
-    "History buffer":"历史缓冲区",
-    "(UP/DOWN arrows to select)":"(上/下箭头选择)",
-    "WiFi Soft-AP Configuration":"WiFi Soft-AP配置",
-    "Soft-AP State":"Soft-AP状态",
-    "Change Soft-AP settings!":"更改Soft-AP设置!",
-    "Debug Log":"调试日志"
+    "Microcontroller Console": "处理器控制台",
+    "Reset &#xb5;C": "复位&#xb5;C",
+    "Clear Log": "清除日志",
+    "&nbsp; Baud:": "&nbsp;波特率:",
+    "&nbsp; Fmt:": "&nbsp;格式:",
+    "Console": "控制台",
+    "(ENTER to submit, ESC to clear)": "(ENTER提交, ESC清除)",
+    "History buffer": "历史缓冲区",
+    "(UP/DOWN arrows to select)": "(上/下箭头选择)",
+    "WiFi Soft-AP Configuration": "WiFi Soft-AP配置",
+    "Soft-AP State": "Soft-AP状态",
+    "Change Soft-AP settings!": "更改Soft-AP设置!",
+    "Debug Log": "调试日志"
 });
- 
- 
+
+
 $(function () {
     window.SwaggerTranslator.translate();
 });
